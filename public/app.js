@@ -7,6 +7,10 @@ let state = {
   poll: null,
   propertySchema: null,
 };
+function setRoute(path, replace = false) {
+  if (location.pathname === path) return;
+  history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
 const esc = (s) =>
   String(s ?? "").replace(
     /[&<>'"]/g,
@@ -52,6 +56,7 @@ function authViewLegacy(setup = false) {
   };
 }
 function authView(mode = "login") {
+  setRoute("/login");
   if (mode === true) mode = "setup";
   if (mode === false) mode = "login";
   const creating = mode === "setup";
@@ -76,10 +81,11 @@ const isAdmin = () => state.user?.role === "admin";
 const canManageServers = () => ["admin", "manager"].includes(state.user?.role);
 const roleName = () => ({ admin: "Admin", manager: "Manager", user: "User" })[state.user?.role] || "User";
 function shell(content, active = "dashboard") {
-  app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><div class="logo">BB</div><span>Bedrock Beacon</span></div><nav class="nav"><button data-short="Servers" class="${active === "dashboard" ? "active" : ""}" onclick="loadServers()">▦ &nbsp; Servers</button><button data-short="Quick View" class="${active === "quick-view" ? "active" : ""}" onclick="quickView()">● &nbsp; Quick View</button>${state.current ? `<button data-short="Status" class="${active === "status" ? "active" : ""}" onclick="openServer('${state.current.id}','status')">◉ &nbsp; Status</button><button data-short="Config" class="${active === "config" ? "active" : ""}" onclick="openServer('${state.current.id}','config')">⚙ &nbsp; Configuration</button>` : ""}</nav><div class="sidebar-bottom">${isAdmin() ? `<button class="sidebar-link ${active === "users" ? "active" : ""}" onclick="usersView()">♙ &nbsp; Users</button><button class="sidebar-link ${active === "admin" ? "active" : ""}" onclick="adminView()">⚙ &nbsp; System Admin</button>` : ""}<div class="signed-in-user"><button class="account-trigger ${active === "account" ? "active" : ""}" onclick="accountView()" aria-label="Open my account settings" title="My Account"><div class="user-avatar">${esc(state.user?.username?.slice(0, 1).toUpperCase() || "U")}</div><div><strong>${esc(state.user?.username || "Unknown user")}</strong><span>${roleName()} · My Account</span></div></button><button class="signout-button" onclick="logout()" aria-label="Sign out" title="Sign out">↪</button></div></div></aside><main class="main">${content}</main></div>`;
+  app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><div class="logo">BB</div><span>Bedrock Beacon</span></div><nav class="nav"><button data-short="Servers" class="${active === "dashboard" ? "active" : ""}" onclick="loadServers()">▦ &nbsp; Servers</button>${state.current ? `<button data-short="Status" class="${active === "status" ? "active" : ""}" onclick="openServer('${state.current.id}','status')">◉ &nbsp; Status</button><button data-short="Config" class="${active === "config" ? "active" : ""}" onclick="openServer('${state.current.id}','config')">⚙ &nbsp; Configuration</button>` : ""}</nav><div class="sidebar-bottom">${isAdmin() ? `<button class="sidebar-link ${active === "users" ? "active" : ""}" onclick="usersView()">♙ &nbsp; Users</button><button class="sidebar-link ${active === "admin" ? "active" : ""}" onclick="adminView()">⚙ &nbsp; System Admin</button>` : ""}<div class="signed-in-user"><button class="account-trigger ${active === "account" ? "active" : ""}" onclick="accountView()" aria-label="Open my account settings" title="My Account"><div class="user-avatar">${esc(state.user?.username?.slice(0, 1).toUpperCase() || "U")}</div><div><strong>${esc(state.user?.username || "Unknown user")}</strong><span>${roleName()} · My Account</span></div></button><button class="signout-button" onclick="logout()" aria-label="Sign out" title="Sign out">↪</button></div></div></aside><main class="main"><div class="management-utility"><button onclick="quickView()">Server Quick View</button></div>${content}</main></div>`;
 }
 async function loadServers() {
   clearInterval(state.poll);
+  setRoute("/manage-server");
   state.page = "dashboard";
   state.current = null;
   try {
@@ -91,6 +97,7 @@ async function loadServers() {
 }
 async function quickView() {
   clearInterval(state.poll);
+  setRoute("/");
   state.page = "quick-view";
   state.current = null;
   try {
@@ -280,6 +287,7 @@ function showImportForm() {
 }
 async function openServer(id, tab = "status") {
   clearInterval(state.poll);
+  setRoute(`/manage-server/${encodeURIComponent(id)}/${tab === "config" ? "configuration" : "status"}`);
   try {
     if (tab === "config" && !state.propertySchema)
       state.propertySchema = await api("/api/property-schema");
@@ -507,6 +515,7 @@ async function control(id, action) {
 }
 async function adminView() {
   clearInterval(state.poll);
+  setRoute("/admin");
   try {
     const a = await api("/api/admin");
     state.current = null;
@@ -585,6 +594,7 @@ async function adminView() {
 }
 async function usersView() {
   clearInterval(state.poll);
+  setRoute("/users");
   try {
     const users = await api("/api/users");
     state.current = null;
@@ -607,6 +617,7 @@ function userRow(user) {
 }
 function accountView() {
   clearInterval(state.poll);
+  setRoute("/my-account");
   state.page = "account";
   state.current = null;
   shell(
@@ -764,8 +775,23 @@ async function logout() {
   state.user = null;
   quickView();
 }
-(async () => {
+async function routeApp() {
+  clearInterval(state.poll);
   const b = await api("/api/bootstrap");
   state.user = b.authenticated ? b.user : null;
-  quickView();
-})().catch((e) => toast(e.message, true));
+  const path = location.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/") return quickView();
+  if (path === "/login") return authView(b.needsSetup ? "setup" : "login");
+  if (!state.user) return authView(b.needsSetup ? "setup" : "login");
+  if (path === "/manage-server") return loadServers();
+  if ((path === "/admin" || path === "/users") && !isAdmin()) return loadServers();
+  if (path === "/admin") return adminView();
+  if (path === "/users") return usersView();
+  if (path === "/my-account") return accountView();
+  const serverRoute = path.match(/^\/manage-server\/([a-z0-9-]+)\/(status|configuration)$/i);
+  if (serverRoute) return openServer(serverRoute[1], serverRoute[2] === "configuration" ? "config" : "status");
+  setRoute("/", true);
+  return quickView();
+}
+window.addEventListener("popstate", () => routeApp().catch((error) => toast(error.message, true)));
+routeApp().catch((e) => toast(e.message, true));

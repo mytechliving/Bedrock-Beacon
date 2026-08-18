@@ -473,6 +473,24 @@ h3 {
   max-width: 1500px;
   width: 100%;
 }
+.management-utility {
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 22px;
+}
+.management-utility button {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 0 5px 16px rgba(18, 34, 23, 0.05);
+}
+.management-utility button:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
 .quick-page {
   min-height: 100vh;
   background:
@@ -1642,6 +1660,9 @@ h3 {
   }
   .main {
     padding: 28px 18px 70px;
+  }
+  .management-utility {
+    margin: 0 0 20px;
   }
   .quick-header {
     align-items: flex-start;

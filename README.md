@@ -8,6 +8,7 @@ Bedrock Beacon is a local Windows control panel for running multiple isolated Mi
 ## Features
 
 - Public, branded **Quick View** home page with automatically refreshed online/offline state and live player counts for every server, plus a single login/dashboard link.
+- Dedicated browser routes for Quick View (`/`), server management (`/manage-server`), administration (`/admin`), users (`/users`), and account security (`/my-account`).
 - Self-service password changes for every authenticated account, with current-password verification and automatic sign-out of other sessions.
 - Local multi-user access with three permission levels:
   - **Admin** — full access to users, system administration, updates, services, gateways, and servers.
