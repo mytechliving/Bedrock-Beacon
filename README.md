@@ -72,6 +72,14 @@ The first public release is version `1.1.1`. Rebuilding with `build-portable.ps1
 
 Use the default patch increment for normal application updates. Minor and major increments should be reserved for larger or compatibility-breaking releases.
 
+To build and publish the next version to GitHub Releases, first commit all application changes, authenticate GitHub CLI with `gh auth login`, and run:
+
+```powershell
+.\publish-release.ps1
+```
+
+The publisher determines the next version from both the application manifest and existing Git tags, builds the portable ZIP, creates a SHA-256 checksum, commits the generated version metadata, creates and pushes an annotated tag, and uploads both files to a GitHub Release. Use `-Increment minor` or `-Increment major` when needed. Add `-Draft` or `-Prerelease` for those GitHub release types. It refuses to run with uncommitted changes or an existing release tag.
+
 ## Windows service
 
 Portable releases include the WinSW wrapper. From an elevated PowerShell session:
