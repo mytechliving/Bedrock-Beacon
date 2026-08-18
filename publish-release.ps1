@@ -16,6 +16,20 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
   if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit code $LASTEXITCODE." }
 }
 
+function Test-GitHubRelease([string]$Tag) {
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    # A missing release is the expected result for a new tag. PowerShell 5
+    # otherwise promotes gh's "release not found" stderr into a terminating error.
+    $ErrorActionPreference = 'SilentlyContinue'
+    & gh release view $Tag --json tagName 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
+}
+
 Push-Location $projectRoot
 try {
   if (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.git'))) { throw 'Run this script from a Git clone of Bedrock Beacon.' }
@@ -52,8 +66,7 @@ try {
 
   & git rev-parse --verify --quiet "refs/tags/$tagName" *> $null
   if ($LASTEXITCODE -eq 0) { throw "Tag $tagName already exists." }
-  & gh release view $tagName *> $null
-  if ($LASTEXITCODE -eq 0) { throw "GitHub Release $tagName already exists." }
+  if (Test-GitHubRelease $tagName) { throw "GitHub Release $tagName already exists." }
 
   $bundledNode = Join-Path $projectRoot 'runtime\node\node.exe'
   $node = if (Test-Path -LiteralPath $bundledNode) { $bundledNode } else { (Get-Command node -ErrorAction Stop).Source }
