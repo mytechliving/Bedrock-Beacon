@@ -962,6 +962,78 @@ h3 {
   border-color: #b9ddc5;
   background: #eef9f1;
 }
+.support-panel {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 30px;
+  align-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 88% 14%,
+      rgba(223, 243, 92, 0.28),
+      transparent 28%
+    ),
+    var(--panel);
+}
+.support-copy {
+  max-width: 650px;
+}
+.support-copy h2 {
+  margin-top: 6px;
+  font-size: 28px;
+}
+.support-copy .sub {
+  max-width: 590px;
+  margin-top: 10px;
+  line-height: 1.55;
+}
+.support-copy form {
+  display: inline-grid;
+  gap: 7px;
+  justify-items: center;
+}
+.paypal-button {
+  min-width: 186px;
+  height: 44px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 999px;
+  background: #000;
+  color: #fff;
+  font-weight: 700;
+}
+.paypal-button:hover,
+.paypal-button:focus-visible {
+  background: #202020;
+  box-shadow: 0 0 0 4px rgba(16, 22, 17, 0.14);
+  outline: none;
+}
+.paypal-powered {
+  color: var(--muted);
+  font-size: 12px;
+}
+.paypal-powered b {
+  color: #003087;
+}
+.support-qr {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: white;
+}
+.support-qr img {
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+}
+.support-qr span {
+  color: var(--muted);
+  font-size: 12px;
+}
 .version-badge {
   padding: 7px 11px;
   border: 1px solid #cbd7c8;
@@ -1147,6 +1219,12 @@ h3 {
   .download-callout .external-button {
     grid-column: 1 / -1;
     width: 100%;
+  }
+  .support-panel {
+    grid-template-columns: 1fr;
+  }
+  .support-qr {
+    justify-self: start;
   }
   .form-grid .full {
     grid-column: auto;

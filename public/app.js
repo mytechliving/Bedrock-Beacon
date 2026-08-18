@@ -491,6 +491,12 @@ async function adminView() {
         "afterend",
         `<div class="download-callout release-callout"><div class="download-callout-icon" aria-hidden="true">BB</div><div><strong>Official Bedrock Beacon releases</strong><p>Download the latest Windows x64 release ZIP from the project’s GitHub Releases page.</p></div><a class="external-button" href="https://github.com/mytechliving/Bedrock-Beacon/releases" target="_blank" rel="noopener noreferrer">View Releases <span aria-hidden="true">↗</span></a></div>`,
       );
+    document
+      .querySelector(".update-panel")
+      .insertAdjacentHTML(
+        "afterend",
+        `<section class="panel support-panel"><div class="support-copy"><span class="eyebrow">Support development</span><h2>Buy me a coffee</h2><p class="sub">If Bedrock Beacon makes managing your worlds easier, you can support its continued development with a one-time contribution through PayPal.</p><form action="https://www.paypal.com/ncp/payment/ZC3R56EUDXHGN" method="post" target="_blank" rel="noopener noreferrer"><button class="paypal-button" type="submit">Buy me a coffee <span aria-hidden="true">↗</span></button><span class="paypal-powered">Secure payment powered by <b>PayPal</b></span></form></div><div class="support-qr"><img src="/assets/buy-me-a-coffee-qr.png" alt="QR code for the Bedrock Beacon Buy me a coffee PayPal payment page"><span>Scan with your phone</span></div></section>`,
+      );
     document.querySelector("#upload").onsubmit = async (e) => {
       e.preventDefault();
       try {
