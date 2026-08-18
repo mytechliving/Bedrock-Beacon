@@ -1,6 +1,6 @@
 {
   "name": "bedrock-beacon",
-  "version": "1.1.4",
+  "version": "1.1.10",
   "private": true,
   "description": "Local multi-instance Minecraft Bedrock server manager",
   "scripts": {

@@ -24,9 +24,10 @@ const SERVICE_WRAPPER = path.join(ROOT, 'service', 'BedrockHarborService.exe');
 const UPDATES = path.join(DATA, 'updates');
 for (const dir of [DATA, SERVERS, UPLOADS, UPDATES]) fs.mkdirSync(dir, { recursive: true });
 
-const defaults = { user: null, settings: { portalPort: 3210, templateVersion: null, templateSource: null, gatewayEnabled: false, gatewayPort: 19132, gatewayVersion: '1.69.0' }, servers: [] };
+const defaults = { user: null, users: [], settings: { portalPort: 3210, templateVersion: null, templateSource: null, gatewayEnabled: false, gatewayPort: 19132, gatewayVersion: '1.69.0' }, servers: [] };
 let db = fs.existsSync(DB_FILE) ? { ...defaults, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) } : structuredClone(defaults);
 db.settings = { ...defaults.settings, ...db.settings };
+db.users = Array.isArray(db.users) ? db.users : [];
 const processes = new Map();
 const sessions = new Map();
 const logs = new Map();
@@ -35,6 +36,11 @@ const creatingServers = new Set();
 let gatewayProcess = null;
 let gatewayLog = '';
 const save = () => fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+if (!db.users.length && db.user) {
+  db.users.push({ id: crypto.randomBytes(8).toString('hex'), username: db.user.username, salt: db.user.salt, hash: db.user.hash, role: 'admin' });
+  db.user = null;
+  save();
+}
 const safeId = value => String(value || '').replace(/[^a-z0-9-]/gi, '');
 const serverById = id => db.servers.find(s => s.id === safeId(id));
 const instanceDir = id => path.join(SERVERS, safeId(id));
@@ -42,11 +48,22 @@ const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) =
 const validPassword = (password, user) => crypto.timingSafeEqual(Buffer.from(hashPassword(password, user.salt).hash, 'hex'), Buffer.from(user.hash, 'hex'));
 const parseCookies = req => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => v.trim().split('=').map(decodeURIComponent)));
 
-function auth(req, res, next) {
+const publicUser = user => ({ id: user.id, username: user.username, role: user.role });
+function currentUser(req) {
   const token = parseCookies(req).bh_session;
-  if (!token || !sessions.has(token)) return res.status(401).json({ error: 'Authentication required' });
+  const userId = token && sessions.get(token);
+  return userId ? db.users.find(user => user.id === userId) || null : null;
+}
+function auth(req, res, next) {
+  req.user = currentUser(req);
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   next();
 }
+const allowRoles = (...roles) => (req, res, next) => {
+  auth(req, res, () => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'You do not have permission to perform this action' }));
+};
+const adminOnly = allowRoles('admin');
+const manageServers = allowRoles('admin', 'manager');
 function serverJson(s) {
   const p = processes.get(s.id);
   const file = path.join(instanceDir(s.id), 'server.properties');
@@ -189,36 +206,79 @@ function runProcess(executable, args, cwd = ROOT) {
   });
 }
 app.use(express.json({ limit: '1mb' }));
-app.get('/api/bootstrap', (req, res) => res.json({ needsSetup: !db.user, authenticated: sessions.has(parseCookies(req).bh_session), template: db.settings }));
+app.get('/api/bootstrap', (req, res) => { const user = currentUser(req); res.json({ needsSetup: db.users.length === 0, authenticated: Boolean(user), user: user ? publicUser(user) : null, template: db.settings }); });
+app.get('/api/quick-view', (req, res) => res.json(db.servers.map(server => ({
+  name: server.name,
+  worldName: server.worldName,
+  status: processes.has(server.id) ? 'online' : 'offline',
+  playersOnline: players.get(server.id)?.size || 0,
+  maxPlayers: server.maxPlayers,
+}))));
 app.post('/api/setup', (req, res) => {
-  if (db.user) return res.status(409).json({ error: 'Account already exists' });
+  if (db.users.length) return res.status(409).json({ error: 'Account already exists' });
   const username = String(req.body.username || '').trim(); const password = String(req.body.password || '');
   if (username.length < 3 || password.length < 8) return res.status(400).json({ error: 'Use a 3+ character username and 8+ character password' });
-  db.user = { username, ...hashPassword(password) }; save(); return login(req, res);
+  db.users.push({ id: crypto.randomBytes(8).toString('hex'), username, role: 'admin', ...hashPassword(password) }); save(); return login(req, res);
 });
 app.post('/api/reset-account', (req, res) => {
+  if (db.users.length) return res.status(403).json({ error: 'Ask an administrator to manage accounts from the Users page' });
   const username = String(req.body.username || '').trim(); const password = String(req.body.password || '');
   if (username.length < 3 || password.length < 8) return res.status(400).json({ error: 'Use a 3+ character username and 8+ character password' });
-  db.user = { username, ...hashPassword(password) }; sessions.clear(); save(); return login(req, res);
+  db.users.push({ id: crypto.randomBytes(8).toString('hex'), username, role: 'admin', ...hashPassword(password) }); sessions.clear(); save(); return login(req, res);
 });
 function login(req, res) {
-  const usernameMatches = db.user && String(req.body.username || '').trim().toLowerCase() === db.user.username.toLowerCase();
-  if (!usernameMatches || !validPassword(String(req.body.password || ''), db.user)) return res.status(401).json({ error: 'Invalid username or password' });
-  const token = crypto.randomBytes(32).toString('hex'); sessions.set(token, Date.now());
-  res.setHeader('Set-Cookie', `bh_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`); res.json({ username: db.user.username });
+  const username = String(req.body.username || '').trim().toLowerCase();
+  const user = db.users.find(candidate => candidate.username.toLowerCase() === username);
+  if (!user || !validPassword(String(req.body.password || ''), user)) return res.status(401).json({ error: 'Invalid username or password' });
+  const token = crypto.randomBytes(32).toString('hex'); sessions.set(token, user.id);
+  res.setHeader('Set-Cookie', `bh_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`); res.json({ user: publicUser(user) });
 }
 app.post('/api/login', login);
 app.post('/api/logout', auth, (req, res) => { sessions.delete(parseCookies(req).bh_session); res.setHeader('Set-Cookie', 'bh_session=; Path=/; Max-Age=0'); res.json({ ok: true }); });
-app.get('/api/admin', auth, (req, res) => res.json({ username: db.user.username, settings: db.settings, bundledArchive: findBundledArchive(), gateway: gatewayJson(), windowsService: windowsServiceJson(), application: APP_MANIFEST }));
+app.put('/api/account/password', auth, (req, res) => {
+  const currentPassword = String(req.body.currentPassword || ''); const newPassword = String(req.body.newPassword || '');
+  if (!validPassword(currentPassword, req.user)) return res.status(401).json({ error: 'Current password is incorrect' });
+  if (newPassword.length < 8) return res.status(400).json({ error: 'New password must contain at least 8 characters' });
+  if (currentPassword === newPassword) return res.status(400).json({ error: 'Choose a password different from your current password' });
+  Object.assign(req.user, hashPassword(newPassword));
+  const currentToken = parseCookies(req).bh_session;
+  for (const [token, userId] of sessions) if (userId === req.user.id && token !== currentToken) sessions.delete(token);
+  save(); res.json({ ok: true });
+});
+app.get('/api/users', adminOnly, (req, res) => res.json(db.users.map(publicUser)));
+app.post('/api/users', adminOnly, (req, res) => {
+  const username = String(req.body.username || '').trim(); const password = String(req.body.password || ''); const role = String(req.body.role || '').toLowerCase();
+  if (username.length < 3 || password.length < 8) return res.status(400).json({ error: 'Use a 3+ character username and 8+ character password' });
+  if (!['admin', 'manager', 'user'].includes(role)) return res.status(400).json({ error: 'Choose Admin, Manager, or User' });
+  if (db.users.some(user => user.username.toLowerCase() === username.toLowerCase())) return res.status(409).json({ error: 'That username already exists' });
+  const user = { id: crypto.randomBytes(8).toString('hex'), username, role, ...hashPassword(password) }; db.users.push(user); save(); res.status(201).json(publicUser(user));
+});
+app.put('/api/users/:id', adminOnly, (req, res) => {
+  const user = db.users.find(candidate => candidate.id === safeId(req.params.id)); if (!user) return res.status(404).json({ error: 'User not found' });
+  const username = String(req.body.username ?? user.username).trim(); const role = String(req.body.role ?? user.role).toLowerCase(); const password = String(req.body.password || '');
+  if (username.length < 3) return res.status(400).json({ error: 'Username must contain at least 3 characters' });
+  if (!['admin', 'manager', 'user'].includes(role)) return res.status(400).json({ error: 'Choose Admin, Manager, or User' });
+  if (db.users.some(candidate => candidate.id !== user.id && candidate.username.toLowerCase() === username.toLowerCase())) return res.status(409).json({ error: 'That username already exists' });
+  if (user.role === 'admin' && role !== 'admin' && db.users.filter(candidate => candidate.role === 'admin').length === 1) return res.status(409).json({ error: 'At least one Admin account is required' });
+  if (password && password.length < 8) return res.status(400).json({ error: 'New passwords must contain at least 8 characters' });
+  user.username = username; user.role = role; if (password) Object.assign(user, hashPassword(password)); save(); res.json(publicUser(user));
+});
+app.delete('/api/users/:id', adminOnly, (req, res) => {
+  const user = db.users.find(candidate => candidate.id === safeId(req.params.id)); if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.id === req.user.id) return res.status(409).json({ error: 'You cannot delete your signed-in account' });
+  if (user.role === 'admin' && db.users.filter(candidate => candidate.role === 'admin').length === 1) return res.status(409).json({ error: 'At least one Admin account is required' });
+  db.users = db.users.filter(candidate => candidate.id !== user.id); for (const [token, userId] of sessions) if (userId === user.id) sessions.delete(token); save(); res.json({ ok: true });
+});
+app.get('/api/admin', adminOnly, (req, res) => res.json({ username: req.user.username, settings: db.settings, bundledArchive: findBundledArchive(), gateway: gatewayJson(), windowsService: windowsServiceJson(), application: APP_MANIFEST }));
 function findBundledArchive() { return fs.readdirSync(ROOT).find(n => /^bedrock-server-.*\.zip$/i.test(n)) || null; }
-app.post('/api/admin/install-bundled', auth, (req, res) => { try { const name = findBundledArchive(); if (!name) throw new Error('No Bedrock server ZIP found beside the application'); installTemplate(path.join(ROOT, name)); res.json(db.settings); } catch (e) { res.status(400).json({ error: e.message }); } });
-app.post('/api/admin/upload', auth, upload.single('archive'), (req, res) => { try { if (!req.file) throw new Error('Choose a ZIP archive'); installTemplate(req.file.path); fs.rmSync(req.file.path, { force: true }); res.json(db.settings); } catch (e) { if (req.file) fs.rmSync(req.file.path, { force: true }); res.status(400).json({ error: e.message }); } });
-app.post('/api/gateway/start', auth, async (req, res) => { try { db.settings.gatewayEnabled = true; migrateGatewayPorts(); save(); res.json(await startGateway()); } catch (e) { res.status(500).json({ error: e.code === 'EADDRINUSE' ? 'UDP 19132 is still in use. Stop or reset the server currently using the default port, then try again.' : e.message }); } });
-app.post('/api/gateway/stop', auth, (req, res) => { db.settings.gatewayEnabled = false; stopGateway(); save(); res.json(gatewayJson()); });
-app.post('/api/gateway/reset', auth, async (req, res) => { try { stopGateway(); await new Promise(resolve => setTimeout(resolve, 400)); writeGatewayConfig(); res.json(await startGateway()); } catch (e) { res.status(500).json({ error: e.message }); } });
-app.post('/api/service/install', auth, (req, res) => { try { if (!fs.existsSync(SERVICE_WRAPPER)) throw new Error('WinSW service wrapper is missing'); execFileSync(SERVICE_WRAPPER, ['install'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: `Service installation requires Administrator privileges. ${String(e.stderr || e.message).trim()}` }); } });
-app.post('/api/service/uninstall', auth, (req, res) => { try { const status = windowsServiceJson(); if (status.state === 'running') throw new Error('Stop the BedrockHarbor service before uninstalling it'); execFileSync(SERVICE_WRAPPER, ['uninstall'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: String(e.message) }); } });
-app.post('/api/update/install', auth, upload.single('archive'), async (req, res) => {
+app.post('/api/admin/install-bundled', adminOnly, (req, res) => { try { const name = findBundledArchive(); if (!name) throw new Error('No Bedrock server ZIP found beside the application'); installTemplate(path.join(ROOT, name)); res.json(db.settings); } catch (e) { res.status(400).json({ error: e.message }); } });
+app.post('/api/admin/upload', adminOnly, upload.single('archive'), (req, res) => { try { if (!req.file) throw new Error('Choose a ZIP archive'); installTemplate(req.file.path); fs.rmSync(req.file.path, { force: true }); res.json(db.settings); } catch (e) { if (req.file) fs.rmSync(req.file.path, { force: true }); res.status(400).json({ error: e.message }); } });
+app.post('/api/gateway/start', adminOnly, async (req, res) => { try { db.settings.gatewayEnabled = true; migrateGatewayPorts(); save(); res.json(await startGateway()); } catch (e) { res.status(500).json({ error: e.code === 'EADDRINUSE' ? 'UDP 19132 is still in use. Stop or reset the server currently using the default port, then try again.' : e.message }); } });
+app.post('/api/gateway/stop', adminOnly, (req, res) => { db.settings.gatewayEnabled = false; stopGateway(); save(); res.json(gatewayJson()); });
+app.post('/api/gateway/reset', adminOnly, async (req, res) => { try { stopGateway(); await new Promise(resolve => setTimeout(resolve, 400)); writeGatewayConfig(); res.json(await startGateway()); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/service/install', adminOnly, (req, res) => { try { if (!fs.existsSync(SERVICE_WRAPPER)) throw new Error('WinSW service wrapper is missing'); execFileSync(SERVICE_WRAPPER, ['install'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: `Service installation requires Administrator privileges. ${String(e.stderr || e.message).trim()}` }); } });
+app.post('/api/service/uninstall', adminOnly, (req, res) => { try { const status = windowsServiceJson(); if (status.state === 'running') throw new Error('Stop the BedrockHarbor service before uninstalling it'); execFileSync(SERVICE_WRAPPER, ['uninstall'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: String(e.message) }); } });
+app.post('/api/update/install', adminOnly, upload.single('archive'), async (req, res) => {
   let workDir = null;
   try {
     if (!req.file) throw new Error('Choose a complete Bedrock Beacon application ZIP');
@@ -249,7 +309,7 @@ app.post('/api/update/install', auth, upload.single('archive'), async (req, res)
 });
 app.get('/api/servers', auth, (req, res) => res.json(db.servers.map(serverJson)));
 app.get('/api/property-schema', auth, (req, res) => res.json(PROPERTY_SCHEMA));
-app.post('/api/servers', auth, async (req, res) => {
+app.post('/api/servers', manageServers, async (req, res) => {
   let creationKey = null;
   let ownsCreation = false;
   let createdDir = null;
@@ -269,7 +329,7 @@ app.post('/api/servers', auth, async (req, res) => {
   } catch (e) { if (createdDir) await fs.promises.rm(createdDir, { recursive: true, force: true }).catch(() => {}); res.status(400).json({ error: e.message }); }
   finally { if (ownsCreation) creatingServers.delete(creationKey); }
 });
-app.post('/api/servers/import', auth, upload.single('archive'), async (req, res) => {
+app.post('/api/servers/import', manageServers, upload.single('archive'), async (req, res) => {
   let createdDir = null;
   try {
     if (!req.file) throw new Error('Choose a Bedrock Beacon ZIP archive');
@@ -318,7 +378,7 @@ function validateProperties(input = {}) {
   return output;
 }
 app.get('/api/servers/:id', auth, (req, res) => { const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' }); res.json({ ...serverJson(s), log: logs.get(s.id) || '' }); });
-app.get('/api/servers/:id/export', auth, async (req, res) => {
+app.get('/api/servers/:id/export', manageServers, async (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' });
   if (processes.has(s.id)) return res.status(409).json({ error: 'Stop the server before exporting it' });
   const exportDir = path.join(DATA, 'exports'); fs.mkdirSync(exportDir, { recursive: true });
@@ -331,7 +391,7 @@ app.get('/api/servers/:id/export', auth, async (req, res) => {
   } catch (e) { await fs.promises.rm(archive, { force: true }).catch(() => {}); res.status(500).json({ error: `Could not export server: ${e.message}` }); }
   finally { await fs.promises.rm(manifestFile, { force: true }).catch(() => {}); }
 });
-app.put('/api/servers/:id', auth, (req, res) => {
+app.put('/api/servers/:id', manageServers, (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' }); if (processes.has(s.id)) return res.status(409).json({ error: 'Stop the server before changing configuration' });
   const port = Number(req.body.port); const reserved = configuredPorts(s.id); if (!Number.isInteger(port) || port < 1024 || port > 65534 || reserved.has(port) || reserved.has(port + 1)) return res.status(400).json({ error: 'Choose an unused two-port range from 1024 to 65535' });
   const acceptedBefore = s.eulaAccepted === true; const eulaAccepted = acceptedBefore || req.body.eulaAccepted === true;
@@ -363,18 +423,18 @@ app.post('/api/servers/:id/start', auth, async (req, res) => {
   try { res.json(await startServer(s)); } catch (e) { s.lastError = e.message; save(); res.status(500).json({ error: e.message }); }
 });
 app.post('/api/servers/:id/stop', auth, (req, res) => { const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' }); stopServer(s.id); res.json({ ok: true }); });
-app.post('/api/servers/:id/reset', auth, async (req, res) => {
+app.post('/api/servers/:id/reset', manageServers, async (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' });
   if (s.eulaAccepted !== true) return res.status(409).json({ error: 'Accept the Minecraft EULA in Server Configuration before resetting this world.' });
   try { if (processes.has(s.id)) { stopServer(s.id); await waitForStop(s.id); } res.json(await startServer(s)); } catch (e) { s.lastError = e.message; save(); res.status(500).json({ error: e.message }); }
 });
-app.delete('/api/servers/:id', auth, async (req, res) => {
+app.delete('/api/servers/:id', manageServers, async (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' });
   if (processes.has(s.id)) return res.status(409).json({ error: 'Stop the server before deleting it' });
   try { await fs.promises.rm(instanceDir(s.id), { recursive: true, force: true }); db.servers = db.servers.filter(item => item.id !== s.id); logs.delete(s.id); players.delete(s.id); save(); writeGatewayConfig(); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: `Could not delete server: ${e.message}` }); }
 });
-app.delete('/api/servers/:id/world', auth, async (req, res) => {
+app.delete('/api/servers/:id/world', manageServers, async (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' });
   if (processes.has(s.id)) return res.status(409).json({ error: 'Stop the server before deleting its world' });
   const worldsRoot = path.resolve(instanceDir(s.id), 'worlds'); const target = path.resolve(worldsRoot, s.worldName);
@@ -383,7 +443,7 @@ app.delete('/api/servers/:id/world', auth, async (req, res) => {
   try { await fs.promises.rm(target, { recursive: true, force: true }); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: `Could not delete world: ${e.message}` }); }
 });
-app.post('/api/servers/:id/command', auth, (req, res) => { const s = serverById(req.params.id); const child = s && processes.get(s.id); if (!child) return res.status(409).json({ error: 'Server is not running' }); child.stdin.write(String(req.body.command || '').replace(/[\r\n]/g, '') + '\n'); res.json({ ok: true }); });
+app.post('/api/servers/:id/command', manageServers, (req, res) => { const s = serverById(req.params.id); const child = s && processes.get(s.id); if (!child) return res.status(409).json({ error: 'Server is not running' }); child.stdin.write(String(req.body.command || '').replace(/[\r\n]/g, '') + '\n'); res.json({ ok: true }); });
 app.use(express.static(path.join(ROOT, 'public')));
 app.get('*splat', (req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 const port = Number(process.env.PORT || db.settings.portalPort || 3210);

@@ -3,9 +3,17 @@
 Bedrock Beacon is a local Windows control panel for running multiple isolated Minecraft Bedrock Dedicated Server instances from one web interface.
 
 > [!IMPORTANT]
-> Bedrock Beacon is an independent project and is not affiliated with or endorsed by Microsoft or Mojang. Minecraft and Bedrock are trademarks of Microsoft/Mojang. The official Bedrock Dedicated Server is not included in the source repository.
+> Bedrock Beacon is an independent project and is not affiliated with or endorsed by Microsoft or Mojang. Minecraft and Bedrock are trademarks of Microsoft/Mojang. The official Bedrock Dedicated Server is not included in the source repository or portable releases.
 
 ## Features
+
+- Public, branded **Quick View** home page with automatically refreshed online/offline state and live player counts for every server, plus a single login/dashboard link.
+- Self-service password changes for every authenticated account, with current-password verification and automatic sign-out of other sessions.
+- Local multi-user access with three permission levels:
+  - **Admin** — full access to users, system administration, updates, services, gateways, and servers.
+  - **Manager** — can create, import, export, configure, reset, delete, start, and stop servers, but cannot access System Admin or manage users.
+  - **User** — can view server status and configuration and start or stop servers, but cannot change settings or create, reset, export, or delete servers.
+- Existing single-account installations are migrated automatically; the existing account becomes an Admin.
 
 - Multiple isolated Bedrock server instances with unique port pairs.
 - Local account-protected administration portal.
@@ -41,7 +49,6 @@ Portable release builds require the following locally installed build inputs, al
 - `runtime/java/jdk-21.0.12+8-jre/`
 - `service/BedrockHarborService.exe` (the internal service ID is retained for upgrade compatibility)
 - `data/bedrockconnect/BedrockConnect-1.69.0.jar`
-- One `bedrock-server-*.zip` official server archive in the project root
 
 After supplying those artifacts, run:
 
@@ -50,6 +57,8 @@ After supplying those artifacts, run:
 ```
 
 The archive is written to `dist/`. Release artifacts must include the license and notices required by each bundled dependency. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The official Minecraft Bedrock Dedicated Server is deliberately excluded from every Bedrock Beacon release. After installing Beacon, the administrator must use the official Minecraft link on the System Admin page, download the **Windows** server ZIP, and upload it to create the local server template.
 
 ### Versioning future releases
 

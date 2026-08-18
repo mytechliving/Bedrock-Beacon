@@ -4,9 +4,6 @@ $distRoot = Join-Path $projectRoot 'dist'
 $stageRoot = Join-Path $distRoot 'BedrockBeacon'
 $manifest = Get-Content -Raw (Join-Path $projectRoot 'app-manifest.json') | ConvertFrom-Json
 $archive = Join-Path $distRoot "BedrockBeacon-$($manifest.version)-win-x64.zip"
-$bedrockArchive = Get-ChildItem -LiteralPath $projectRoot -Filter 'bedrock-server-*.zip' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-
-if (-not $bedrockArchive) { throw 'Place an official bedrock-server-*.zip archive in the project root before building.' }
 $requiredBuildInputs = @(
   'runtime\node\node.exe',
   'runtime\java\jdk-21.0.12+8-jre\bin\java.exe',
@@ -39,7 +36,6 @@ $files = @(
   'build-portable.ps1', 'new-release.ps1'
 )
 foreach ($file in $files) { Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stageRoot }
-Copy-Item -LiteralPath $bedrockArchive.FullName -Destination $stageRoot
 
 Copy-Item -LiteralPath (Join-Path $projectRoot 'public') -Destination $stageRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts') -Destination $stageRoot -Recurse
