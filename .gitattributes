@@ -1,0 +1,12 @@
+* text=auto
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.xml text eol=lf
+*.png binary
+*.jar binary
+*.exe binary
+*.zip binary
+

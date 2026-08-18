@@ -1,0 +1,35 @@
+# Installed dependencies and bundled runtimes
+node_modules/
+runtime/
+
+# Local application state, accounts, templates, logs, and uploads
+data/
+Servers/
+
+# Generated distributions and vendor archives
+dist/
+bedrock-server-*.zip
+service/*.exe
+service/*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs, temporary files, and editor state
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.codex/
+

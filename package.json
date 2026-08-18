@@ -1,0 +1,14 @@
+{
+  "name": "bedrock-beacon",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Local multi-instance Minecraft Bedrock server manager",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.2"
+  }
+}

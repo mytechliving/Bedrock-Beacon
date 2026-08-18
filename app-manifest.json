@@ -1,0 +1,8 @@
+{
+  "product": "bedrock-harbor",
+  "displayName": "Bedrock Beacon",
+  "formatVersion": 1,
+  "version": "0.3.0",
+  "platform": "win-x64",
+  "entrypoint": "server.js"
+}
