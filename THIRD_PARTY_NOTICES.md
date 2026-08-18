@@ -37,3 +37,30 @@ The portable distribution includes an Eclipse Temurin Java runtime for BedrockCo
 - Bundled release: JRE 21.0.12+8 LTS
 - License: GPLv2 with Classpath Exception and bundled third-party notices
 - Runtime location: `runtime/java/jdk-21.0.12+8-jre`
+
+## Express
+
+Bedrock Beacon uses Express for its local HTTP API and web portal.
+
+- Project: https://expressjs.com/
+- Installed release: 5.1.0
+- Developer: Express project contributors / OpenJS Foundation
+- License: MIT
+
+## Multer
+
+Bedrock Beacon uses Multer to receive server, backup, and application-update ZIP uploads.
+
+- Project: https://github.com/expressjs/multer
+- Installed release: 2.0.2
+- Developer: Express project contributors
+- License: MIT
+
+## adm-zip
+
+Bedrock Beacon uses adm-zip to inspect and validate ZIP archives.
+
+- Project: https://github.com/cthackers/adm-zip
+- Installed release: 0.6.0
+- Developer: cthackers and contributors
+- License: MIT

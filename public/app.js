@@ -458,6 +458,12 @@ async function adminView() {
         ? `<div class="install-hero"><div class="install-icon">✓</div><div class="install-copy"><strong>Bedrock server installed</strong><span>Version <code>${esc(a.settings.templateVersion)}</code> is installed and ready for new server instances.</span><span>Source: ${esc(a.settings.templateSource || "official Bedrock archive")}</span></div></div>`
         : `<div class="install-hero missing"><div class="install-icon">!</div><div class="install-copy"><strong>Bedrock server not installed</strong><span>Install the bundled archive or upload an official Bedrock Server ZIP before creating an instance.</span></div></div>`;
     }
+    document
+      .querySelector(".install-hero")
+      .insertAdjacentHTML(
+        "afterend",
+        `<div class="download-callout"><div class="download-callout-icon" aria-hidden="true">↓</div><div><strong>Need the official Bedrock server?</strong><p>Download the <b>Windows</b> version from Minecraft, then upload the downloaded ZIP below.</p></div><a class="external-button" href="https://www.minecraft.net/en-us/download/server/bedrock" target="_blank" rel="noopener noreferrer">Download for Windows <span aria-hidden="true">↗</span></a></div>`,
+      );
     const gateway = a.gateway;
     document
       .querySelector(".admin-layout .panel")
@@ -478,6 +484,12 @@ async function adminView() {
       .insertAdjacentHTML(
         "afterend",
         `<section class="panel update-panel"><div class="panel-head"><div><span class="eyebrow">Application maintenance</span><h2>Install Update</h2><p class="sub">Replace Beacon with a complete portable application package.</p></div><span class="version-badge">v${esc(application.version)}</span></div><div class="update-warning"><strong>Before installing</strong><p>Stop every managed server and use only a trusted Bedrock Beacon ZIP. Beacon validates and stages the package, preserves accounts, settings, templates, and worlds, then restarts automatically.</p></div><form id="application-update" class="update-form"><div class="field"><label for="update-archive">Complete Bedrock Beacon ZIP</label><input id="update-archive" name="archive" type="file" accept=".zip,application/zip" required><small>The archive must contain the complete Windows x64 application, including its bundled Node.js runtime.</small></div><label class="update-confirm"><input name="confirmed" type="checkbox" required><span>I have stopped all worlds and trust the source of this update package.</span></label><div class="actions"><button class="btn primary" type="submit">Install Update</button></div></form></section>`,
+      );
+    document
+      .querySelector(".update-panel .panel-head")
+      .insertAdjacentHTML(
+        "afterend",
+        `<div class="download-callout release-callout"><div class="download-callout-icon" aria-hidden="true">BB</div><div><strong>Official Bedrock Beacon releases</strong><p>Download the latest Windows x64 release ZIP from the project’s GitHub Releases page.</p></div><a class="external-button" href="https://github.com/mytechliving/Bedrock-Beacon/releases" target="_blank" rel="noopener noreferrer">View Releases <span aria-hidden="true">↗</span></a></div>`,
       );
     document.querySelector("#upload").onsubmit = async (e) => {
       e.preventDefault();

@@ -35,12 +35,14 @@ New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 $files = @(
   'server.js', 'property-schema.js', 'app-manifest.json', 'package.json', 'package-lock.json',
   'README.md', 'THIRD_PARTY_NOTICES.md', 'start.bat', 'start.ps1',
-  'install-service.ps1', 'uninstall-service.ps1', 'install-update.ps1'
+  'install-service.ps1', 'uninstall-service.ps1', 'install-update.ps1',
+  'build-portable.ps1', 'new-release.ps1'
 )
 foreach ($file in $files) { Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stageRoot }
 Copy-Item -LiteralPath $bedrockArchive.FullName -Destination $stageRoot
 
 Copy-Item -LiteralPath (Join-Path $projectRoot 'public') -Destination $stageRoot -Recurse
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts') -Destination $stageRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot 'node_modules') -Destination $stageRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot 'service') -Destination $stageRoot -Recurse
 

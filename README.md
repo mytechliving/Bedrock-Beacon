@@ -51,6 +51,18 @@ After supplying those artifacts, run:
 
 The archive is written to `dist/`. Release artifacts must include the license and notices required by each bundled dependency. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+### Versioning future releases
+
+The first public release is version `1.1.1`. Rebuilding with `build-portable.ps1` preserves the current version. To advance the semantic version and build the next release in one operation, run:
+
+```powershell
+.\new-release.ps1          # 1.1.1 -> 1.1.2
+.\new-release.ps1 minor    # 1.1.2 -> 1.2.0
+.\new-release.ps1 major    # 1.2.0 -> 2.0.0
+```
+
+Use the default patch increment for normal application updates. Minor and major increments should be reserved for larger or compatibility-breaking releases.
+
 ## Windows service
 
 Portable releases include the WinSW wrapper. From an elevated PowerShell session:
@@ -77,6 +89,23 @@ Select the dashboard's **+** card and choose **Import Server** to restore it. Le
 ## Application updates
 
 In **System Admin**, select **Install Update** and provide a complete trusted Bedrock Beacon portable ZIP. All managed servers must be stopped. Beacon validates and stages the archive, preserves local data and worlds, installs the application files, and restarts automatically. The most recent updater result is recorded in `data/updates/last-update.log`.
+
+## Third-party software and credits
+
+Bedrock Beacon is an independent management application. It does not use Multicraft or another commercial game-server panel. Beacon creates an isolated directory and launches a separate official Bedrock Dedicated Server process for each managed world. BedrockConnect provides the optional single console-discoverable entry and routes players to the selected backend server.
+
+| Component                                                                                     | Developer or maintainer                          | How Bedrock Beacon uses it                                                                                                                                |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Minecraft Bedrock Dedicated Server](https://www.minecraft.net/en-us/download/server/bedrock) | Mojang Studios / Microsoft                       | The official server engine that runs each Minecraft Bedrock world. Administrators must obtain the Windows ZIP from Minecraft and accept Mojang's terms.   |
+| [BedrockConnect](https://github.com/Pugmatt/BedrockConnect)                                   | Pugmatt and BedrockConnect contributors          | Supplies the optional LAN-advertised server-selection gateway used by console clients to reach multiple Beacon-managed servers through one visible entry. |
+| [WinSW](https://github.com/winsw/winsw)                                                       | WinSW project contributors                       | Runs Bedrock Beacon as a Windows service when service installation is enabled.                                                                            |
+| [Node.js](https://nodejs.org/)                                                                | Node.js contributors and the OpenJS Foundation   | Runs the Bedrock Beacon backend and local web portal. The portable distribution includes a Windows Node.js runtime.                                       |
+| [Eclipse Temurin](https://adoptium.net/)                                                      | Eclipse Adoptium project contributors            | Provides the Java runtime used to launch BedrockConnect in the portable distribution.                                                                     |
+| [Express](https://expressjs.com/)                                                             | Express project contributors / OpenJS Foundation | Provides the local HTTP API and serves the administration portal.                                                                                         |
+| [Multer](https://github.com/expressjs/multer)                                                 | Express project contributors                     | Handles Bedrock server, backup, and application-update ZIP uploads.                                                                                       |
+| [adm-zip](https://github.com/cthackers/adm-zip)                                               | cthackers and contributors                       | Reads and validates ZIP archives used for imports and updates.                                                                                            |
+
+Minecraft, Minecraft Bedrock, and the Bedrock Dedicated Server are products and trademarks of Microsoft and Mojang. BedrockConnect, WinSW, Node.js, Eclipse Temurin, Express, Multer, and adm-zip are separate projects maintained by their respective developers. Their inclusion does not imply endorsement of Bedrock Beacon. License and bundled-version details are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Security and privacy
 
