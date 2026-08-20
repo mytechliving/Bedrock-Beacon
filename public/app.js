@@ -555,7 +555,7 @@ async function adminView() {
       .querySelector(".service-panel")
       .insertAdjacentHTML(
         "afterend",
-        `<section class="panel update-panel"><div class="panel-head"><div><span class="eyebrow">Application maintenance</span><h2>Install Update</h2><p class="sub">Replace Beacon with a complete portable application package.</p></div><span class="version-badge">v${esc(application.version)}</span></div><div class="update-warning"><strong>Before installing</strong><p>Stop every managed server and use only a trusted Bedrock Beacon ZIP. Beacon validates and stages the package, preserves accounts, settings, templates, and worlds, then restarts automatically.</p></div><form id="application-update" class="update-form"><div class="field"><label for="update-archive">Complete Bedrock Beacon ZIP</label><input id="update-archive" name="archive" type="file" accept=".zip,application/zip" required><small>The archive must contain the complete Windows x64 application, including its bundled Node.js runtime.</small></div><label class="update-confirm"><input name="confirmed" type="checkbox" required><span>I have stopped all worlds and trust the source of this update package.</span></label><div class="actions"><button class="btn primary" type="submit">Install Update</button></div></form></section>`,
+        `<section class="panel update-panel"><div class="panel-head"><div><span class="eyebrow">Application maintenance</span><h2>Install Update</h2><p class="sub">Check GitHub automatically or provide a portable application package.</p></div><div class="update-heading-actions"><button class="btn ghost" type="button" onclick="checkForUpdates(this)">Check for Updates</button><span class="version-badge">v${esc(application.version)}</span></div></div><div id="update-discovery" class="update-discovery">${cachedUpdateMarkup(a.cachedUpdate)}</div><div class="update-warning"><strong>Before installing</strong><p>Stop every managed server. Beacon validates the package again immediately before installation, preserves accounts, settings, templates, and worlds, then restarts automatically.</p></div><form id="application-update" class="update-form"><div class="field"><label for="update-archive">Or provide a Bedrock Beacon ZIP manually</label><input id="update-archive" name="archive" type="file" accept=".zip,application/zip" required><small>The archive must contain the complete Windows x64 application, including its bundled Node.js runtime.</small></div><label class="update-confirm"><input name="confirmed" type="checkbox" required><span>I have stopped all worlds and trust the source of this update package.</span></label><div class="actions"><button class="btn primary" type="submit">Install Uploaded Update</button></div></form></section>`,
       );
     document
       .querySelector(".update-panel .panel-head")
@@ -703,20 +703,59 @@ async function installApplicationUpdate(event) {
       method: "POST",
       body: new FormData(form),
     });
-    shell(
-      `<div class="restart-view" role="status" aria-live="polite"><div class="restart-spinner" aria-hidden="true"></div><span class="eyebrow">Installing update</span><h1>Beacon is restarting</h1><p>Updating from version ${esc(result.currentVersion)} to <b>${esc(result.installingVersion)}</b>. Your accounts, settings, servers, and worlds are being preserved.</p><p class="sub">This page will reconnect automatically.</p></div>`,
-      "admin",
-    );
-    waitForApplicationRestart();
+    showUpdateRestart(result);
   } catch (error) {
     button.disabled = false;
     button.textContent = "Install Update";
     toast(error.message, true);
   }
 }
+function cachedUpdateMarkup(update) {
+  if (!update) return '<div class="update-idle"><strong>No update is cached</strong><span>Check GitHub to find and download the latest release.</span></div>';
+  const size = `${(Number(update.size || 0) / 1024 / 1024).toFixed(1)} MB`;
+  return `<div class="cached-update"><div><span class="eyebrow">Ready for later</span><strong>Bedrock Beacon ${esc(update.version)}</strong><span>${esc(size)} · Downloaded ${esc(new Date(update.downloadedAt).toLocaleString())}</span></div><div class="actions"><button class="btn primary" onclick="installCachedUpdate(this)">Install Cached Update</button><button class="btn ghost" onclick="removeCachedUpdate(this)">Remove Download</button></div></div>`;
+}
+async function checkForUpdates(button) {
+  const region = document.querySelector("#update-discovery");
+  button.disabled = true; button.textContent = "Checking...";
+  try {
+    const result = await api("/api/update/check");
+    if (!result.updateAvailable) region.innerHTML = `<div class="update-current"><strong>Bedrock Beacon is up to date</strong><span>Version ${esc(result.currentVersion)} is the latest published release.</span></div>${result.cachedUpdate ? cachedUpdateMarkup(result.cachedUpdate) : ""}`;
+    else if (!result.assetAvailable) region.innerHTML = `<div class="update-available"><div><strong>Version ${esc(result.latestVersion)} is available</strong><span>The release does not yet include its Windows x64 package.</span></div><a class="btn ghost" href="${esc(result.releaseUrl)}" target="_blank" rel="noopener noreferrer">View Release</a></div>`;
+    else region.innerHTML = `<div class="update-available"><div><span class="eyebrow">Update available</span><strong>Bedrock Beacon ${esc(result.latestVersion)}</strong><span>${(Number(result.assetSize) / 1024 / 1024).toFixed(1)} MB from the official GitHub release</span></div><div class="actions"><button class="btn primary" onclick="downloadGithubUpdate(this,true)">Download & Install</button><button class="btn ghost" onclick="downloadGithubUpdate(this,false)">Download for Later</button></div></div>${result.cachedUpdate ? cachedUpdateMarkup(result.cachedUpdate) : ""}`;
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; button.textContent = "Check for Updates"; }
+}
+async function downloadGithubUpdate(button, installAfter) {
+  if (installAfter && !confirm("Stop all managed servers before continuing. Download, validate, and install the latest Bedrock Beacon release now?")) return;
+  button.disabled = true; button.textContent = "Downloading & validating...";
+  try {
+    const result = await api("/api/update/download", { method: "POST", body: "{}" });
+    toast(`Bedrock Beacon ${result.cachedUpdate.version} downloaded and validated`);
+    if (installAfter) return installCachedUpdate(button, true);
+    await adminView();
+  } catch (error) { button.disabled = false; button.textContent = installAfter ? "Download & Install" : "Download for Later"; toast(error.message, true); }
+}
+async function installCachedUpdate(button, alreadyConfirmed = false) {
+  if (!alreadyConfirmed && !confirm("Stop all managed servers before continuing. Revalidate and install the cached update now?")) return;
+  button.disabled = true; button.textContent = "Revalidating...";
+  try { const result = await api("/api/update/install-cached", { method: "POST", body: "{}" }); showUpdateRestart(result); }
+  catch (error) { button.disabled = false; button.textContent = "Install Cached Update"; toast(error.message, true); }
+}
+async function removeCachedUpdate(button) {
+  if (!confirm("Remove the downloaded update from this computer?")) return;
+  button.disabled = true;
+  try { await api("/api/update/cache", { method: "DELETE", body: "{}" }); toast("Cached update removed"); await adminView(); }
+  catch (error) { button.disabled = false; toast(error.message, true); }
+}
+function showUpdateRestart(result) {
+  shell(`<div class="restart-view" role="status" aria-live="polite"><div class="restart-spinner" aria-hidden="true"></div><span class="eyebrow">Installing update</span><h1>Beacon is restarting</h1><p>Updating from version ${esc(result.currentVersion)} to <b>${esc(result.installingVersion)}</b>. Your accounts, settings, servers, and worlds are being preserved.</p><p class="sub">This page will reconnect automatically.</p></div>`, "admin");
+  waitForApplicationRestart();
+}
 async function waitForApplicationRestart() {
   await new Promise((resolve) => setTimeout(resolve, 2500));
-  for (;;) {
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
     try {
       const response = await fetch("/api/bootstrap", { cache: "no-store" });
       if (response.ok) {
@@ -725,6 +764,11 @@ async function waitForApplicationRestart() {
       }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  const restartView = document.querySelector(".restart-view");
+  if (restartView) {
+    restartView.classList.add("failed");
+    restartView.innerHTML = `<span class="eyebrow">Update needs attention</span><h1>Beacon did not restart</h1><p>The updater did not bring the portal back within two minutes. Your server and world data remain preserved.</p><p class="sub">Review <code>data\\updates\\last-update.log</code>, then start Bedrock Beacon manually if needed.</p><button class="btn primary" onclick="location.reload()">Try reconnecting</button>`;
   }
 }
 async function gatewayControl(action) {

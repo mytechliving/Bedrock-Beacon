@@ -7,6 +7,8 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 const PROPERTY_SCHEMA = require('./property-schema');
 const APP_MANIFEST = require('./app-manifest.json');
 
@@ -22,7 +24,93 @@ const GATEWAY_CONFIG = path.join(GATEWAY_DIR, 'custom_servers.json');
 const BUNDLED_JAVA = path.join(ROOT, 'runtime', 'java', 'jdk-21.0.12+8-jre', 'bin', 'java.exe');
 const SERVICE_WRAPPER = path.join(ROOT, 'service', 'BedrockHarborService.exe');
 const UPDATES = path.join(DATA, 'updates');
+const UPDATE_CACHE = path.join(DATA, 'update-cache');
+const UPDATE_CACHE_ARCHIVE = path.join(UPDATE_CACHE, 'BedrockBeacon-update.zip');
+const UPDATE_CACHE_META = path.join(UPDATE_CACHE, 'metadata.json');
+const GITHUB_LATEST_RELEASE = 'https://api.github.com/repos/mytechliving/Bedrock-Beacon/releases/latest';
 for (const dir of [DATA, SERVERS, UPLOADS, UPDATES]) fs.mkdirSync(dir, { recursive: true });
+
+const UPDATE_LOG = path.join(UPDATES, 'last-update.log');
+function writeUpdateLog(message) {
+  fs.appendFileSync(UPDATE_LOG, `${new Date().toISOString()} ${message}\r\n`);
+}
+function cleanupUpdateWorkDirs() {
+  const staleBefore = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  for (const entry of fs.readdirSync(UPDATES, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(UPDATES, entry.name);
+    const completed = path.join(directory, 'completed.marker');
+    const stale = fs.statSync(directory).mtimeMs < staleBefore;
+    if (fs.existsSync(completed) || stale) {
+      try { fs.rmSync(directory, { recursive: true, force: true }); }
+      catch (error) { writeUpdateLog(`Deferred cleanup for ${entry.name}: ${error.message}`); }
+    }
+  }
+}
+setTimeout(cleanupUpdateWorkDirs, 15000).unref();
+
+function runningAsWindowsService() {
+  if (process.env.BEDROCK_BEACON_SERVICE === '1') return true;
+  try {
+    const status = execFileSync('sc.exe', ['queryex', 'BedrockHarbor'], { windowsHide: true, encoding: 'utf8' });
+    const servicePid = Number(status.match(/PID\s*:\s*(\d+)/i)?.[1] || 0);
+    return servicePid > 0 && servicePid === process.ppid;
+  } catch { return false; }
+}
+function semverParts(value) {
+  const match = String(value || '').replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+  return match ? match.slice(1).map(Number) : null;
+}
+function compareVersions(left, right) {
+  const a = semverParts(left); const b = semverParts(right);
+  if (!a || !b) throw new Error('Release version is not a supported semantic version');
+  for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+  return 0;
+}
+function sha256File(file) {
+  const hash = crypto.createHash('sha256'); const descriptor = fs.openSync(file, 'r'); const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+  try { for (;;) { const bytes = fs.readSync(descriptor, buffer, 0, buffer.length, null); if (!bytes) break; hash.update(buffer.subarray(0, bytes)); } }
+  finally { fs.closeSync(descriptor); }
+  return hash.digest('hex');
+}
+function cachedUpdateJson() {
+  if (!fs.existsSync(UPDATE_CACHE_ARCHIVE) || !fs.existsSync(UPDATE_CACHE_META)) return null;
+  try {
+    const metadata = JSON.parse(fs.readFileSync(UPDATE_CACHE_META, 'utf8'));
+    return { version: metadata.version, name: metadata.name, size: fs.statSync(UPDATE_CACHE_ARCHIVE).size, downloadedAt: metadata.downloadedAt, sha256: metadata.sha256 };
+  } catch { return null; }
+}
+async function githubLatestRelease() {
+  const response = await fetch(GITHUB_LATEST_RELEASE, { headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': `Bedrock-Beacon/${APP_MANIFEST.version}` } });
+  if (!response.ok) throw new Error(`GitHub update check failed with status ${response.status}`);
+  const release = await response.json();
+  const version = String(release.tag_name || '').replace(/^v/i, '');
+  if (!semverParts(version)) throw new Error('GitHub latest release has an unsupported version tag');
+  const expectedName = `BedrockBeacon-${version}-win-x64.zip`;
+  const asset = (release.assets || []).find(candidate => candidate.name === expectedName);
+  return { version, tag: release.tag_name, htmlUrl: release.html_url, publishedAt: release.published_at, asset: asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size, digest: asset.digest || null } : null };
+}
+function validateApplicationArchive(archivePath, expected = {}) {
+  const zip = new AdmZip(archivePath); const entries = zip.getEntries(); let totalSize = 0; let manifestEntry = null; const names = new Set();
+  for (const entry of entries) {
+    const entryName = entry.entryName.replace(/\\/g, '/').replace(/^\.\//, ''); const parts = entryName.split('/');
+    if (!entryName || entryName.startsWith('/') || /^[a-z]:/i.test(entryName) || parts.includes('..')) throw new Error('Update archive contains an unsafe file path');
+    const unixType = (entry.attr >>> 16) & 0xF000; if (unixType === 0xA000) throw new Error('Update archive symbolic links are not supported');
+    totalSize += Number(entry.header.size || 0); if (totalSize > 5 * 1024 * 1024 * 1024) throw new Error('Update archive expands beyond the 5 GB safety limit');
+    names.add(entryName); if (entryName === 'app-manifest.json' || entryName.endsWith('/app-manifest.json')) manifestEntry = entry;
+  }
+  if (!manifestEntry) throw new Error('The ZIP does not contain a Bedrock Beacon application manifest');
+  const manifest = JSON.parse(zip.readAsText(manifestEntry));
+  if (manifest.product !== 'bedrock-harbor' || manifest.formatVersion !== 1 || manifest.platform !== 'win-x64') throw new Error('This is not a supported Bedrock Beacon Windows application package');
+  if (!semverParts(manifest.version)) throw new Error('Update archive contains an unsupported application version');
+  if (expected.version && manifest.version !== expected.version) throw new Error(`Downloaded archive version ${manifest.version} does not match GitHub release ${expected.version}`);
+  const manifestName = manifestEntry.entryName.replace(/\\/g, '/').replace(/^\.\//, ''); const prefix = manifestName.slice(0, -'app-manifest.json'.length);
+  for (const required of ['server.js','package.json','public/app.js','runtime/node/node.exe','install-update.ps1','launch-update.ps1']) if (!names.has(`${prefix}${required}`)) throw new Error(`Update package is missing ${required}`);
+  const sha256 = sha256File(archivePath);
+  const expectedDigest = String(expected.digest || '').match(/^sha256:([a-f0-9]{64})$/i)?.[1];
+  if (expectedDigest && sha256.toLowerCase() !== expectedDigest.toLowerCase()) throw new Error('Downloaded update failed GitHub SHA-256 verification');
+  return { manifest, prefix, sha256, checksumVerified: Boolean(expectedDigest) };
+}
 
 const defaults = { user: null, users: [], settings: { portalPort: 3210, templateVersion: null, templateSource: null, gatewayEnabled: false, gatewayPort: 19132, gatewayVersion: '1.69.0' }, servers: [] };
 let db = fs.existsSync(DB_FILE) ? { ...defaults, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) } : structuredClone(defaults);
@@ -69,6 +157,22 @@ function serverJson(s) {
   const file = path.join(instanceDir(s.id), 'server.properties');
   const properties = fs.existsSync(file) ? parseProperties(fs.readFileSync(file, 'utf8')) : propertyValues(s);
   return { ...s, properties, status: p ? 'online' : (s.lastError ? 'error' : 'offline'), pid: p?.pid || null, playersOnline: players.get(s.id)?.size || 0 };
+}
+function discoverRunningServers() {
+  try {
+    const powerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const script = "Get-CimInstance Win32_Process -Filter \"Name = 'bedrock_server.exe'\" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress";
+    const output = execFileSync(powerShell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, encoding: 'utf8' }).trim();
+    if (!output) return;
+    const discovered = JSON.parse(output); const entries = Array.isArray(discovered) ? discovered : [discovered];
+    const byExecutable = new Map(entries.filter(item => item.ExecutablePath).map(item => [path.resolve(item.ExecutablePath).toLowerCase(), Number(item.ProcessId)]));
+    for (const server of db.servers) {
+      const executable = path.resolve(instanceDir(server.id), 'bedrock_server.exe').toLowerCase(); const pid = byExecutable.get(executable);
+      if (!pid || processes.has(server.id)) continue;
+      processes.set(server.id, { pid, recovered: true, stdin: null }); players.set(server.id, new Set());
+      logs.set(server.id, `Bedrock Beacon reconnected to running server process ${pid}. Console history before this application restart is unavailable.\n`);
+    }
+  } catch (error) { console.warn(`Could not discover existing Bedrock server processes: ${error.message}`); }
 }
 function appendLog(id, chunk) {
   const text = String(chunk);
@@ -190,6 +294,10 @@ function installTemplate(zipPath) {
 }
 function stopServer(id) {
   const child = processes.get(id); if (!child) return false;
+  if (child.recovered) {
+    try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}
+    processes.delete(id); players.delete(id); return true;
+  }
   child.stdin.write('stop\n');
   setTimeout(() => { if (processes.has(id)) child.kill(); }, 10000).unref();
   return true;
@@ -199,10 +307,11 @@ const app = express();
 const upload = multer({ dest: UPLOADS, limits: { fileSize: 10 * 1024 * 1024 * 1024 } });
 function runProcess(executable, args, cwd = ROOT) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, windowsHide: true }); let stderr = '';
+    const child = spawn(executable, args, { cwd, windowsHide: true }); let stdout = ''; let stderr = '';
+    child.stdout.on('data', chunk => { stdout += String(chunk); });
     child.stderr.on('data', chunk => { stderr += String(chunk); });
     child.on('error', reject);
-    child.on('exit', code => code === 0 ? resolve() : reject(new Error(stderr.trim() || `${executable} exited with code ${code}`)));
+    child.on('exit', code => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(stderr.trim() || `${executable} exited with code ${code}`)));
   });
 }
 app.use(express.json({ limit: '1mb' }));
@@ -269,7 +378,7 @@ app.delete('/api/users/:id', adminOnly, (req, res) => {
   if (user.role === 'admin' && db.users.filter(candidate => candidate.role === 'admin').length === 1) return res.status(409).json({ error: 'At least one Admin account is required' });
   db.users = db.users.filter(candidate => candidate.id !== user.id); for (const [token, userId] of sessions) if (userId === user.id) sessions.delete(token); save(); res.json({ ok: true });
 });
-app.get('/api/admin', adminOnly, (req, res) => res.json({ username: req.user.username, settings: db.settings, bundledArchive: findBundledArchive(), gateway: gatewayJson(), windowsService: windowsServiceJson(), application: APP_MANIFEST }));
+app.get('/api/admin', adminOnly, (req, res) => res.json({ username: req.user.username, settings: db.settings, bundledArchive: findBundledArchive(), gateway: gatewayJson(), windowsService: windowsServiceJson(), application: APP_MANIFEST, cachedUpdate: cachedUpdateJson() }));
 function findBundledArchive() { return fs.readdirSync(ROOT).find(n => /^bedrock-server-.*\.zip$/i.test(n)) || null; }
 app.post('/api/admin/install-bundled', adminOnly, (req, res) => { try { const name = findBundledArchive(); if (!name) throw new Error('No Bedrock server ZIP found beside the application'); installTemplate(path.join(ROOT, name)); res.json(db.settings); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/api/admin/upload', adminOnly, upload.single('archive'), (req, res) => { try { if (!req.file) throw new Error('Choose a ZIP archive'); installTemplate(req.file.path); fs.rmSync(req.file.path, { force: true }); res.json(db.settings); } catch (e) { if (req.file) fs.rmSync(req.file.path, { force: true }); res.status(400).json({ error: e.message }); } });
@@ -278,34 +387,72 @@ app.post('/api/gateway/stop', adminOnly, (req, res) => { db.settings.gatewayEnab
 app.post('/api/gateway/reset', adminOnly, async (req, res) => { try { stopGateway(); await new Promise(resolve => setTimeout(resolve, 400)); writeGatewayConfig(); res.json(await startGateway()); } catch (e) { res.status(500).json({ error: e.message }); } });
 app.post('/api/service/install', adminOnly, (req, res) => { try { if (!fs.existsSync(SERVICE_WRAPPER)) throw new Error('WinSW service wrapper is missing'); execFileSync(SERVICE_WRAPPER, ['install'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: `Service installation requires Administrator privileges. ${String(e.stderr || e.message).trim()}` }); } });
 app.post('/api/service/uninstall', adminOnly, (req, res) => { try { const status = windowsServiceJson(); if (status.state === 'running') throw new Error('Stop the BedrockHarbor service before uninstalling it'); execFileSync(SERVICE_WRAPPER, ['uninstall'], { cwd: path.dirname(SERVICE_WRAPPER), windowsHide: true, stdio: 'pipe' }); res.json(windowsServiceJson()); } catch (e) { res.status(500).json({ error: String(e.message) }); } });
-app.post('/api/update/install', adminOnly, upload.single('archive'), async (req, res) => {
-  let workDir = null;
+async function launchApplicationUpdate(archivePath, validation, removeArchiveAfterExtract) {
+  if (processes.size) throw new Error('Stop every Bedrock server before installing an application update');
+  const { manifest, prefix } = validation;
+  const workDir = path.join(UPDATES, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`); const staging = path.join(workDir, 'staging'); fs.mkdirSync(staging, { recursive: true });
+  writeUpdateLog(`Extracting validated update into ${workDir}.`);
+  await runProcess('tar.exe', ['-xf', archivePath, '-C', staging]);
+  if (removeArchiveAfterExtract) await fs.promises.rm(archivePath, { force: true });
+  const stagingRoot = path.resolve(staging); const source = path.resolve(stagingRoot, ...prefix.split('/').filter(Boolean));
+  if (source !== stagingRoot && !source.startsWith(`${stagingRoot}${path.sep}`)) throw new Error('Invalid application root in update package');
+  const updater = path.join(workDir, 'install-update.ps1'); await fs.promises.copyFile(path.join(ROOT, 'install-update.ps1'), updater);
+  const launcher = path.join(workDir, 'launch-update.ps1'); await fs.promises.copyFile(path.join(ROOT, 'launch-update.ps1'), launcher);
+  stopGateway();
+  const powerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  if (!fs.existsSync(powerShell)) throw new Error(`Windows PowerShell was not found at ${powerShell}`);
+  const restartMode = runningAsWindowsService() ? 'service' : 'portable';
+  const launcherOutput = await runProcess(powerShell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Updater', updater, '-Source', source, '-Target', ROOT, '-ParentPid', String(process.pid), '-RestartMode', restartMode]);
+  const updaterPid = Number(String(launcherOutput.stdout || '').trim());
+  if (!Number.isInteger(updaterPid) || updaterPid < 1) throw new Error('Windows did not return a valid updater process ID');
+  writeUpdateLog(`Independent updater process ${updaterPid} started in ${restartMode} restart mode.`);
+  return { ok: true, restarting: true, currentVersion: APP_MANIFEST.version, installingVersion: manifest.version };
+}
+app.get('/api/update/check', adminOnly, async (req, res) => {
+  try { const latest = await githubLatestRelease(); res.json({ currentVersion: APP_MANIFEST.version, latestVersion: latest.version, updateAvailable: compareVersions(latest.version, APP_MANIFEST.version) > 0, releaseUrl: latest.htmlUrl, publishedAt: latest.publishedAt, assetAvailable: Boolean(latest.asset), assetSize: latest.asset?.size || null, cachedUpdate: cachedUpdateJson() }); }
+  catch (error) { res.status(502).json({ error: error.message }); }
+});
+app.post('/api/update/download', adminOnly, async (req, res) => {
+  const partial = `${UPDATE_CACHE_ARCHIVE}.part`;
   try {
+    const latest = await githubLatestRelease();
+    if (compareVersions(latest.version, APP_MANIFEST.version) <= 0) throw new Error('Bedrock Beacon is already up to date');
+    if (!latest.asset) throw new Error(`GitHub release ${latest.tag} does not include the Windows x64 portable ZIP`);
+    const downloadUrl = new URL(latest.asset.url);
+    if (downloadUrl.protocol !== 'https:' || downloadUrl.hostname !== 'github.com' || !downloadUrl.pathname.startsWith('/mytechliving/Bedrock-Beacon/releases/download/')) throw new Error('GitHub returned an unexpected release download URL');
+    if (latest.asset.size < 1 || latest.asset.size > 5 * 1024 * 1024 * 1024) throw new Error('GitHub release asset has an unsupported size');
+    fs.mkdirSync(UPDATE_CACHE, { recursive: true }); await fs.promises.rm(partial, { force: true });
+    writeUpdateLog(`Downloading GitHub release ${latest.version}.`);
+    const response = await fetch(downloadUrl, { redirect: 'follow', headers: { 'User-Agent': `Bedrock-Beacon/${APP_MANIFEST.version}` } });
+    if (!response.ok || !response.body) throw new Error(`GitHub release download failed with status ${response.status}`);
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partial));
+    const size = fs.statSync(partial).size; if (size !== latest.asset.size) throw new Error(`Downloaded file size ${size} does not match GitHub asset size ${latest.asset.size}`);
+    const validation = validateApplicationArchive(partial, { version: latest.version, digest: latest.asset.digest });
+    await fs.promises.rm(UPDATE_CACHE_ARCHIVE, { force: true }); await fs.promises.rename(partial, UPDATE_CACHE_ARCHIVE);
+    const metadata = { version: latest.version, name: latest.asset.name, size, sha256: validation.sha256, checksumVerified: validation.checksumVerified, sourceUrl: latest.htmlUrl, downloadedAt: new Date().toISOString() };
+    fs.writeFileSync(UPDATE_CACHE_META, JSON.stringify(metadata, null, 2)); writeUpdateLog(`GitHub release ${latest.version} downloaded and validated successfully.`);
+    res.json({ cachedUpdate: cachedUpdateJson(), checksumVerified: validation.checksumVerified });
+  } catch (error) { await fs.promises.rm(partial, { force: true }).catch(() => {}); try { writeUpdateLog(`UPDATE DOWNLOAD FAILED: ${error.message}`); } catch {} res.status(400).json({ error: error.message }); }
+});
+app.post('/api/update/install-cached', adminOnly, async (req, res) => {
+  try {
+    fs.writeFileSync(UPDATE_LOG, `${new Date().toISOString()} Cached update installation requested.\r\n`);
+    const metadata = cachedUpdateJson(); if (!metadata) throw new Error('No downloaded update is cached');
+    writeUpdateLog(`Revalidating cached Bedrock Beacon ${metadata.version} before installation.`);
+    const validation = validateApplicationArchive(UPDATE_CACHE_ARCHIVE, { version: metadata.version, digest: `sha256:${metadata.sha256}` });
+    writeUpdateLog(`Cached update ${validation.manifest.version} passed pre-install validation.`);
+    const result = await launchApplicationUpdate(UPDATE_CACHE_ARCHIVE, validation, false); res.json(result);
+  } catch (error) { try { writeUpdateLog(`CACHED UPDATE INSTALL FAILED: ${error.message}`); } catch {} res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/update/cache', adminOnly, async (req, res) => { try { await fs.promises.rm(UPDATE_CACHE, { recursive: true, force: true }); res.json({ ok: true }); } catch (error) { res.status(500).json({ error: error.message }); } });
+app.post('/api/update/install', adminOnly, upload.single('archive'), async (req, res) => {
+  try {
+    fs.writeFileSync(UPDATE_LOG, `${new Date().toISOString()} Uploaded update installation requested.\r\n`);
     if (!req.file) throw new Error('Choose a complete Bedrock Beacon application ZIP');
-    if (processes.size) throw new Error('Stop every Bedrock server before installing an application update');
-    const zip = new AdmZip(req.file.path); const entries = zip.getEntries(); let totalSize = 0; let manifestEntry = null; const names = new Set();
-    for (const entry of entries) {
-      const entryName = entry.entryName.replace(/\\/g, '/').replace(/^\.\//, ''); const parts = entryName.split('/');
-      if (!entryName || entryName.startsWith('/') || /^[a-z]:/i.test(entryName) || parts.includes('..')) throw new Error('Update archive contains an unsafe file path');
-      const unixType = (entry.attr >>> 16) & 0xF000; if (unixType === 0xA000) throw new Error('Update archive symbolic links are not supported');
-      totalSize += Number(entry.header.size || 0); if (totalSize > 5 * 1024 * 1024 * 1024) throw new Error('Update archive expands beyond the 5 GB safety limit');
-      names.add(entryName); if (entryName === 'app-manifest.json' || entryName.endsWith('/app-manifest.json')) manifestEntry = entry;
-    }
-    if (!manifestEntry) throw new Error('The ZIP does not contain a Bedrock Beacon application manifest');
-    const manifest = JSON.parse(zip.readAsText(manifestEntry));
-    if (manifest.product !== 'bedrock-harbor' || manifest.formatVersion !== 1 || manifest.platform !== 'win-x64') throw new Error('This is not a supported Bedrock Beacon Windows application package');
-    const manifestName = manifestEntry.entryName.replace(/\\/g, '/').replace(/^\.\//, ''); const prefix = manifestName.slice(0, -'app-manifest.json'.length);
-    for (const required of ['server.js','package.json','public/app.js','runtime/node/node.exe','install-update.ps1']) if (!names.has(`${prefix}${required}`)) throw new Error(`Update package is missing ${required}`);
-    workDir = path.join(UPDATES, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`); const staging = path.join(workDir, 'staging'); fs.mkdirSync(staging, { recursive: true });
-    await runProcess('tar.exe', ['-xf', req.file.path, '-C', staging]); await fs.promises.rm(req.file.path, { force: true });
-    const stagingRoot = path.resolve(staging); const source = path.resolve(stagingRoot, ...prefix.split('/').filter(Boolean));
-    if (source !== stagingRoot && !source.startsWith(`${stagingRoot}${path.sep}`)) throw new Error('Invalid application root in update package');
-    const updater = path.join(workDir, 'install-update.ps1'); await fs.promises.copyFile(path.join(ROOT, 'install-update.ps1'), updater);
-    stopGateway();
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updater, '-Source', source, '-Target', ROOT, '-ParentPid', String(process.pid)], { cwd: workDir, windowsHide: true, detached: true, stdio: 'ignore' }); child.unref();
-    res.json({ ok: true, restarting: true, currentVersion: APP_MANIFEST.version, installingVersion: manifest.version });
-    setTimeout(() => process.exit(0), 1500).unref();
-  } catch (e) { if (req.file) await fs.promises.rm(req.file.path, { force: true }).catch(() => {}); if (workDir) await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {}); res.status(400).json({ error: e.message }); }
+    writeUpdateLog(`Validating uploaded archive ${path.basename(req.file.path)}.`);
+    const validation = validateApplicationArchive(req.file.path); writeUpdateLog(`Archive validated for Bedrock Beacon ${validation.manifest.version}.`);
+    const result = await launchApplicationUpdate(req.file.path, validation, true); res.json(result);
+  } catch (error) { try { writeUpdateLog(`UPDATE FAILED BEFORE HANDOFF: ${error.message}`); } catch {} if (req.file) await fs.promises.rm(req.file.path, { force: true }).catch(() => {}); res.status(400).json({ error: error.message }); }
 });
 app.get('/api/servers', auth, (req, res) => res.json(db.servers.map(serverJson)));
 app.get('/api/property-schema', auth, (req, res) => res.json(PROPERTY_SCHEMA));
@@ -395,8 +542,10 @@ app.put('/api/servers/:id', manageServers, (req, res) => {
   const s = serverById(req.params.id); if (!s) return res.status(404).json({ error: 'Server not found' }); if (processes.has(s.id)) return res.status(409).json({ error: 'Stop the server before changing configuration' });
   const port = Number(req.body.port); const reserved = configuredPorts(s.id); if (!Number.isInteger(port) || port < 1024 || port > 65534 || reserved.has(port) || reserved.has(port + 1)) return res.status(400).json({ error: 'Choose an unused two-port range from 1024 to 65535' });
   const acceptedBefore = s.eulaAccepted === true; const eulaAccepted = acceptedBefore || req.body.eulaAccepted === true;
+  const nextGameMode = ['survival','creative','adventure'].includes(req.body.gameMode) ? req.body.gameMode : 'survival';
   const properties = validateProperties(req.body.properties || {}); properties['enable-lan-visibility'] = db.settings.gatewayEnabled ? false : properties['enable-lan-visibility'];
-  Object.assign(s, { name: String(req.body.name || s.name).trim(), worldName: String(req.body.worldName || s.worldName).trim(), port, maxPlayers: Math.min(1000, Math.max(1, Number(req.body.maxPlayers) || 10)), gameMode: ['survival','creative','adventure'].includes(req.body.gameMode) ? req.body.gameMode : 'survival', difficulty: ['peaceful','easy','normal','hard'].includes(req.body.difficulty) ? req.body.difficulty : 'easy', levelSeed: String(req.body.levelSeed || ''), levelType: String(req.body.levelType || 'DEFAULT').toUpperCase(), allowCheats: Boolean(req.body.allowCheats), allowList: Boolean(req.body.allowList), properties, eulaAccepted, eulaAcceptedAt: eulaAccepted ? (acceptedBefore ? s.eulaAcceptedAt : new Date().toISOString()) : null, lastError: null });
+  if (nextGameMode !== s.gameMode) properties['force-gamemode'] = true;
+  Object.assign(s, { name: String(req.body.name || s.name).trim(), worldName: String(req.body.worldName || s.worldName).trim(), port, maxPlayers: Math.min(1000, Math.max(1, Number(req.body.maxPlayers) || 10)), gameMode: nextGameMode, difficulty: ['peaceful','easy','normal','hard'].includes(req.body.difficulty) ? req.body.difficulty : 'easy', levelSeed: String(req.body.levelSeed || ''), levelType: String(req.body.levelType || 'DEFAULT').toUpperCase(), allowCheats: Boolean(req.body.allowCheats), allowList: Boolean(req.body.allowList), properties, eulaAccepted, eulaAcceptedAt: eulaAccepted ? (acceptedBefore ? s.eulaAcceptedAt : new Date().toISOString()) : null, lastError: null });
   writeProperties(path.join(instanceDir(s.id), 'server.properties'), propertyValues(s)); fs.writeFileSync(path.join(instanceDir(s.id), 'eula.txt'), `# Recorded by Bedrock Beacon at ${s.eulaAcceptedAt || new Date().toISOString()}\r\neula=${s.eulaAccepted}\r\n`); save(); writeGatewayConfig(); res.json(serverJson(s));
 });
 async function startServer(s) {
@@ -443,10 +592,11 @@ app.delete('/api/servers/:id/world', manageServers, async (req, res) => {
   try { await fs.promises.rm(target, { recursive: true, force: true }); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: `Could not delete world: ${e.message}` }); }
 });
-app.post('/api/servers/:id/command', manageServers, (req, res) => { const s = serverById(req.params.id); const child = s && processes.get(s.id); if (!child) return res.status(409).json({ error: 'Server is not running' }); child.stdin.write(String(req.body.command || '').replace(/[\r\n]/g, '') + '\n'); res.json({ ok: true }); });
+app.post('/api/servers/:id/command', manageServers, (req, res) => { const s = serverById(req.params.id); const child = s && processes.get(s.id); if (!child) return res.status(409).json({ error: 'Server is not running' }); if (child.recovered || !child.stdin) return res.status(409).json({ error: 'Console input is unavailable for a server recovered after an application restart. Reset the server to reconnect its console.' }); child.stdin.write(String(req.body.command || '').replace(/[\r\n]/g, '') + '\n'); res.json({ ok: true }); });
 app.use(express.static(path.join(ROOT, 'public')));
 app.get('*splat', (req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 const port = Number(process.env.PORT || db.settings.portalPort || 3210);
 migrateGatewayPorts();
+discoverRunningServers();
 app.listen(port, '127.0.0.1', async () => { console.log(`Bedrock Beacon is running at http://localhost:${port}`); if (db.settings.gatewayEnabled) startGateway().catch(error => { gatewayLog += `\n${error.message}`; }); });
 process.on('SIGINT', () => { stopGateway(); for (const id of processes.keys()) stopServer(id); setTimeout(() => process.exit(), 500).unref(); });

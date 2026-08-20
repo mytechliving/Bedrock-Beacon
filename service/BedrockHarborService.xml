@@ -5,6 +5,7 @@
   <executable>%BASE%\..\runtime\node\node.exe</executable>
   <arguments>"%BASE%\..\server.js"</arguments>
   <workingdirectory>%BASE%\..</workingdirectory>
+  <env name="BEDROCK_BEACON_SERVICE" value="1" />
   <startmode>Automatic</startmode>
   <delayedAutoStart>true</delayedAutoStart>
   <stoptimeout>30 sec</stoptimeout>

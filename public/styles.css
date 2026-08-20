@@ -1372,6 +1372,67 @@ h3 {
   color: #3d6233;
   font: 700 13px "Space Grotesk";
 }
+.update-heading-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.update-discovery {
+  margin-bottom: 18px;
+}
+.update-idle,
+.update-current {
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f7f9f7;
+}
+.update-current {
+  border-color: #cde3d2;
+  background: #f0f8f2;
+}
+.update-idle span,
+.update-current span,
+.update-available span,
+.cached-update span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.update-available,
+.cached-update {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px;
+  border: 1px solid #bcd8c3;
+  border-radius: 13px;
+  background: #edf8f0;
+}
+.cached-update {
+  border-color: #cfd8d1;
+  background: #f7f9f7;
+}
+.update-available + .cached-update,
+.update-current + .cached-update {
+  margin-top: 10px;
+}
+.update-available > div:first-child,
+.cached-update > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+.update-available strong,
+.cached-update strong {
+  font: 700 18px "Space Grotesk";
+}
+.update-available .actions,
+.cached-update .actions {
+  flex-wrap: nowrap;
+  margin: 0;
+}
 .update-warning {
   padding: 16px 18px;
   border-left: 4px solid #d9a82f;
@@ -1663,6 +1724,16 @@ h3 {
   }
   .management-utility {
     margin: 0 0 20px;
+  }
+  .update-heading-actions,
+  .update-available,
+  .cached-update {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .update-available .actions,
+  .cached-update .actions {
+    flex-wrap: wrap;
   }
   .quick-header {
     align-items: flex-start;

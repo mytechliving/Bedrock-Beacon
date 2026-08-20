@@ -1,7 +1,10 @@
 param(
   [Parameter(Mandatory = $true)][string]$Source,
   [Parameter(Mandatory = $true)][string]$Target,
-  [Parameter(Mandatory = $true)][int]$ParentPid
+  [Parameter(Mandatory = $true)][int]$ParentPid,
+  [Parameter(Mandatory = $true)]
+  [ValidateSet('portable', 'service')]
+  [string]$RestartMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,15 +23,15 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path $resolvedSource 'app-manifest.json'))) { throw 'Staged application manifest is missing.' }
   if ($resolvedSource -eq $resolvedTarget) { throw 'Update source and target cannot be the same directory.' }
 
-  $service = Get-Service -Name 'BedrockHarbor' -ErrorAction SilentlyContinue
-  $restartService = $null -ne $service
+  $service = if ($RestartMode -eq 'service') { Get-Service -Name 'BedrockHarbor' -ErrorAction SilentlyContinue } else { $null }
+  if ($RestartMode -eq 'service' -and -not $service) { throw 'Beacon was launched as a service, but the BedrockHarbor service could not be found.' }
   if ($service -and $service.Status -ne 'Stopped') {
     Write-UpdateLog 'Stopping BedrockHarbor Windows service.'
     Stop-Service -Name 'BedrockHarbor' -Force
   }
 
   Write-UpdateLog "Waiting for application process $ParentPid to exit."
-  Wait-Process -Id $ParentPid -Timeout 60 -ErrorAction SilentlyContinue
+  Wait-Process -Id $ParentPid -Timeout 5 -ErrorAction SilentlyContinue
   if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Stop-Process -Id $ParentPid -Force }
 
   Write-UpdateLog 'Installing staged application files while preserving data and Servers.'
@@ -49,7 +52,13 @@ try {
   }
 
   Write-UpdateLog 'Application update installed successfully.'
-  if ($restartService) {
+  $cacheDirectory = Join-Path $resolvedTarget 'data\update-cache'
+  if (Test-Path -LiteralPath $cacheDirectory) {
+    Remove-Item -LiteralPath $cacheDirectory -Recurse -Force
+    Write-UpdateLog 'Cached update media removed.'
+  }
+  New-Item -ItemType File -Force -Path (Join-Path $PSScriptRoot 'completed.marker') | Out-Null
+  if ($RestartMode -eq 'service') {
     Start-Service -Name 'BedrockHarbor'
     Write-UpdateLog 'Windows service restarted.'
   } else {

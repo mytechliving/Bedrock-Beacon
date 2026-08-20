@@ -106,7 +106,9 @@ Select the dashboard's **+** card and choose **Import Server** to restore it. Le
 
 ## Application updates
 
-In **System Admin**, select **Install Update** and provide a complete trusted Bedrock Beacon portable ZIP. All managed servers must be stopped. Beacon validates and stages the archive, preserves local data and worlds, installs the application files, and restarts automatically. The most recent updater result is recorded in `data/updates/last-update.log`.
+In **System Admin**, select **Check for Updates** to compare the installed version with the latest official GitHub release. Beacon can download and install immediately or retain the validated ZIP in `data/update-cache` for a later installation. GitHub asset size and SHA-256 metadata are checked when available, the complete Beacon package is validated after download, and the cached package is validated again immediately before installation. A successful installation removes the cached media automatically.
+
+You may also provide a complete trusted Bedrock Beacon portable ZIP manually. All managed servers must be stopped. Beacon validates and stages the archive, preserves local data and worlds, installs the application files, and restarts automatically in either interactive or Windows-service mode. Validation, extraction, handoff, installation, and restart activity is recorded in `data/updates/last-update.log`. Completed staging data is removed automatically after restart; failed staging is retained temporarily for diagnosis and removed after seven days.
 
 ## Third-party software and credits
 
